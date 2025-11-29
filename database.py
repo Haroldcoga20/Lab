@@ -58,7 +58,6 @@ class DatabaseManager:
                            (d['nombre'], d['edad'], d['unidad'], d['genero'], d['dni'], d['telefono'])).commit()
         finally: conn.close()
 
-    # NUEVO: Función para editar paciente
     def editar_paciente(self, id_p, d):
         conn = self.get_connection()
         if not conn: return
@@ -133,21 +132,39 @@ class DatabaseManager:
         conn = self.get_connection()
         if not conn: return
         try:
+            # --- CORRECCIÓN ERROR 1: Convertir vacíos a None ---
+            val_min = d.get('min')
+            if val_min == "": val_min = None
+            
+            val_max = d.get('max')
+            if val_max == "": val_max = None
+            # ---------------------------------------------------
+
             conn.cursor().execute("""
-                INSERT INTO Analitos (nombre, unidad, categoria, subtituloReporte, tipoDato, metodo, valorRefMin, valorRefMax, referenciaVisual)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], d.get('min'), d.get('max'), d['refVisual'])).commit()
+                INSERT INTO Analitos (nombre, unidad, categoria, subtituloReporte, tipoDato, metodo, valorRefMin, valorRefMax, referenciaVisual, formula, esCalculado)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+                (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], 
+                 val_min, val_max, d['refVisual'], d.get('formula'), d.get('esCalculado', 0))).commit()
         finally: conn.close()
 
     def editar_analito(self, id_analito, d):
         conn = self.get_connection()
         if not conn: return
         try:
+            # --- CORRECCIÓN ERROR 1: Convertir vacíos a None ---
+            val_min = d.get('min')
+            if val_min == "": val_min = None
+            
+            val_max = d.get('max')
+            if val_max == "": val_max = None
+            # ---------------------------------------------------
+
             conn.cursor().execute("""
                 UPDATE Analitos 
-                SET nombre=?, unidad=?, categoria=?, subtituloReporte=?, tipoDato=?, metodo=?, valorRefMin=?, valorRefMax=?, referenciaVisual=?
+                SET nombre=?, unidad=?, categoria=?, subtituloReporte=?, tipoDato=?, metodo=?, valorRefMin=?, valorRefMax=?, referenciaVisual=?, formula=?, esCalculado=?
                 WHERE id=?
-            """, (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], d.get('min'), d.get('max'), d['refVisual'], id_analito)).commit()
+            """, (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], 
+                  val_min, val_max, d['refVisual'], d.get('formula'), d.get('esCalculado', 0), id_analito)).commit()
         finally: conn.close()
 
     # --- GESTIÓN DE PERFILES (CON ORDEN) ---
@@ -286,7 +303,7 @@ class DatabaseManager:
                 
                 for aid in analitos_ids:
                     if cursor.execute("SELECT COUNT(*) FROM OrdenResultados WHERE ordenTrabajoId = ? AND analitoId = ?", (orden_id, aid)).fetchone()[0] == 0:
-                        cursor.execute("INSERT INTO OrdenResultados (ordenTrabajoId, perfilExamenId, analitoId, valorResultado) VALUES (?, ?, ?, '')", (orden_id, pid, aid)) 
+                        cursor.execute("INSERT INTO OrdenResultados (ordenTrabajoId, perfilExamenId, analitoId, valorResultado, estado) VALUES (?, ?, ?, '', 'Pendiente')", (orden_id, pid, aid)) 
             conn.commit()
             return True
         except Exception as e:
@@ -316,25 +333,46 @@ class DatabaseManager:
         if not conn: return []
         try:
             cursor = conn.cursor()
-            cursor.execute("""
+            # --- CORRECCIÓN ERROR 2: ReferenciaVisual explícita de Analitos (a) ---
+            query = """
                 SELECT 
-                    r.analitoId, 
+                    res.analitoId, 
                     a.nombre, 
                     a.tipoDato, 
                     a.unidad, 
-                    r.valorResultado, 
+                    res.valorResultado,
+                    res.estado,
                     a.id as AnalitoID,
-                    a.referenciaVisual,
                     a.metodo,
+                    a.formula,
+                    a.esCalculado,
                     ISNULL(a.subtituloReporte, a.categoria) as categoria, 
-                    p.nombre as Perfil
-                FROM OrdenResultados r 
-                JOIN Analitos a ON r.analitoId = a.id
-                JOIN PerfilesExamen p ON r.perfilExamenId = p.id
-                LEFT JOIN DetallePerfilAnalito dpa ON r.perfilExamenId = dpa.perfilExamenId AND r.analitoId = dpa.analitoId
-                WHERE r.ordenTrabajoId = ? 
+                    p.nombre as Perfil,
+                    
+                    -- CORRECCIÓN: Usamos a.referenciaVisual porque rr no tiene esa columna
+                    a.referenciaVisual,
+                    
+                    -- Campos de Pánico y Alertas
+                    rr.panicoMin,
+                    rr.panicoMax,
+                    rr.textoInterpretacion
+
+                FROM OrdenResultados res
+                JOIN OrdenesTrabajo ot ON res.ordenTrabajoId = ot.id
+                JOIN Pacientes pac ON ot.pacienteId = pac.id
+                JOIN Analitos a ON res.analitoId = a.id
+                JOIN PerfilesExamen p ON res.perfilExamenId = p.id
+                LEFT JOIN DetallePerfilAnalito dpa ON res.perfilExamenId = dpa.perfilExamenId AND res.analitoId = dpa.analitoId
+                
+                LEFT JOIN RangosReferencia rr ON a.id = rr.analitoId
+                    AND rr.unidadEdad = pac.unidadEdad
+                    AND pac.edad BETWEEN rr.edadMin AND rr.edadMax
+                    AND (rr.genero = pac.genero OR rr.genero = 'Ambos')
+
+                WHERE res.ordenTrabajoId = ? 
                 ORDER BY p.nombre, ISNULL(dpa.orden, 9999), a.nombre
-            """, (orden_id,))
+            """
+            cursor.execute(query, (orden_id,))
             cols = [c[0] for c in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
         finally: conn.close()
@@ -351,7 +389,8 @@ class DatabaseManager:
         try:
             cursor = conn.cursor()
             for aid, valor in resultados_dict.items():
-                cursor.execute("UPDATE OrdenResultados SET valorResultado = ? WHERE ordenTrabajoId = ? AND analitoId = ?", (valor, orden_id, aid))
+                cursor.execute("UPDATE OrdenResultados SET valorResultado = ?, estado = 'Validado' WHERE ordenTrabajoId = ? AND analitoId = ?", (valor, orden_id, aid))
+            
             cursor.execute("UPDATE OrdenesTrabajo SET estado = 'Completado', fechaCompletado = GETDATE() WHERE id = ?", (orden_id,))
             conn.commit()
         finally: conn.close()

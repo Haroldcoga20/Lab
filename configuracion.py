@@ -9,59 +9,115 @@ class ConfiguracionView(ft.Column):
         # --- TAB 1: ANALITOS ---
         self.lista_analitos_ui = ft.ListView(expand=True, spacing=10, padding=10)
         self.editando_analito_id = None
+        self.analito_actual_para_rangos = None # ID del analito que se está configurando rangos
 
-        # Formulario Analito
-        self.n_nombre = ft.TextField(label="Nombre Analito (Ej. Hemoglobina)", prefix_icon="science")
+        # --- FORMULARIO ANALITO (Nivel 1) ---
+        self.n_nombre = ft.TextField(label="Nombre Analito", prefix_icon="science")
         
-        # 1. CATEGORÍA (Para organizar en pantalla)
         self.n_cat = ft.Dropdown(
-            label="Categoría General (Organización)", 
+            label="Categoría General", 
             options=[ft.dropdown.Option(x) for x in ["Hematología", "Química", "Uroanálisis", "Inmunología", "Hormonas", "Microbiología", "Parasitología"]],
             value="Hematología"
         )
-
-        # 2. SUBTÍTULO (Para el PDF) - ESTE ES EL QUE FALTABA
-        self.n_subtitulo = ft.TextField(
-            label="Subtítulo en Reporte (Opcional)", 
-            hint_text="Ej: SERIE ROJA, EXAMEN MACROSCÓPICO...", 
-            prefix_icon="title"
-        )
-
+        self.n_subtitulo = ft.TextField(label="Subtítulo en Reporte", hint_text="Ej: SERIE ROJA", prefix_icon="title")
+        
         self.n_tipo = ft.Dropdown(
             label="Tipo de Resultado", 
             options=[ft.dropdown.Option("Numerico"), ft.dropdown.Option("Opciones"), ft.dropdown.Option("Texto")], 
             value="Numerico", on_change=self.cambiar_tipo_analito
         )
+        
+        # Nuevos Campos de Cálculo
+        self.n_calculado = ft.Switch(label="¿Es un valor calculado?", value=False, on_change=self.cambiar_es_calculado)
+        self.n_formula = ft.TextField(label="Fórmula (Ej: [COL]-[HDL]-([TRIG]/5))", visible=False, prefix_icon="functions")
+        
+        # Campos estándar (Generales)
         self.n_unidad = ft.TextField(label="Unidad")
         self.n_metodo = ft.TextField(label="Método")
-        self.n_min = ft.TextField(label="Min", width=80)
-        self.n_max = ft.TextField(label="Max", width=80)
-        self.n_ref = ft.TextField(label="Ref. Visual")
+        self.n_min = ft.TextField(label="Min (Gral)", width=80)
+        self.n_max = ft.TextField(label="Max (Gral)", width=80)
+        self.n_ref = ft.TextField(label="Ref. Visual (Texto General)")
+
+        # Botón para abrir el gestor avanzado de rangos
+        self.btn_rangos = ft.ElevatedButton(
+            "Gestionar Rangos de Referencia (Pediatría/Sexo)", 
+            icon="settings_accessibility", 
+            bgcolor="#FF9800", color="white",
+            on_click=self.abrir_gestionar_rangos,
+            visible=False # Solo visible al editar
+        )
 
         self.dialog_analito = ft.AlertDialog(
-            title=ft.Text("Analito"),
-            content=ft.Column([
-                self.n_nombre, 
-                self.n_cat,      # Categoría General
-                self.n_subtitulo,# Subtítulo PDF
-                self.n_tipo, self.n_metodo,
-                ft.Row([self.n_min, self.n_max, self.n_unidad]), self.n_ref
-            ], tight=True, width=400),
+            title=ft.Text("Configurar Analito"),
+            content=ft.Container(
+                width=500,
+                content=ft.Column([
+                    self.n_nombre, 
+                    ft.Row([self.n_cat, self.n_tipo]),
+                    self.n_subtitulo,
+                    self.n_calculado, self.n_formula,
+                    ft.Divider(),
+                    ft.Text("Valores por Defecto:", size=12, color="grey"),
+                    self.n_metodo,
+                    ft.Row([self.n_min, self.n_max, self.n_unidad]), 
+                    self.n_ref,
+                    ft.Divider(),
+                    self.btn_rangos
+                ], tight=True, scroll=ft.ScrollMode.AUTO, height=500)
+            ),
             actions=[ft.TextButton("Guardar", on_click=self.guardar_analito)]
         )
+
+        # --- FORMULARIO RANGOS (Nivel 2 - Modal sobre Modal) ---
+        # Inputs para crear un rango
+        self.r_genero = ft.Dropdown(label="Género", options=[ft.dropdown.Option("Ambos"), ft.dropdown.Option("Masculino"), ft.dropdown.Option("Femenino")], value="Ambos", width=120)
+        self.r_unidad = ft.Dropdown(label="Unidad Edad", options=[ft.dropdown.Option("Años"), ft.dropdown.Option("Meses"), ft.dropdown.Option("Días")], value="Años", width=120)
+        self.r_edad_min = ft.TextField(label="Edad Min", width=80, value="0")
+        self.r_edad_max = ft.TextField(label="Edad Max", width=80, value="100")
+        
+        self.r_val_min = ft.TextField(label="Val Min", width=80)
+        self.r_val_max = ft.TextField(label="Val Max", width=80)
+        self.r_panico_min = ft.TextField(label="Pánico Min", width=80, border_color="red")
+        self.r_panico_max = ft.TextField(label="Pánico Max", width=80, border_color="red")
+        self.r_texto = ft.TextField(label="Texto Interpretación (Opcional)", hint_text="Ej: Alto Riesgo")
+
+        self.tabla_rangos = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Género")),
+                ft.DataColumn(ft.Text("Edad")),
+                ft.DataColumn(ft.Text("Rango")),
+                ft.DataColumn(ft.Text("Pánico")),
+                ft.DataColumn(ft.Text("Interp.")),
+                ft.DataColumn(ft.Text("X")),
+            ],
+            rows=[]
+        )
+
+        self.dialog_rangos = ft.AlertDialog(
+            title=ft.Text("Rangos de Referencia Avanzados"),
+            content=ft.Container(
+                width=700, height=600,
+                content=ft.Column([
+                    ft.Text("Agregar Nuevo Rango:", weight="bold"),
+                    ft.Row([self.r_genero, self.r_unidad, self.r_edad_min, self.r_edad_max]),
+                    ft.Row([self.r_val_min, self.r_val_max, self.r_panico_min, self.r_panico_max]),
+                    ft.Row([self.r_texto, ft.ElevatedButton("Agregar", icon="add", on_click=self.agregar_rango, bgcolor="green", color="white")]),
+                    ft.Divider(),
+                    ft.Column([self.tabla_rangos], scroll=ft.ScrollMode.AUTO, expand=True)
+                ])
+            ),
+            actions=[ft.TextButton("Cerrar", on_click=lambda e: self.page.close(self.dialog_rangos))]
+        )
+
 
         # --- TAB 2: PERFILES ---
         self.lista_perfiles_ui = ft.ListView(expand=True, spacing=10, padding=10)
         self.editando_perfil_id = None
-
         self.p_nombre = ft.TextField(label="Nombre Perfil", prefix_icon="folder_special")
         self.p_cat = ft.Dropdown(label="Categoría General", options=[ft.dropdown.Option(x) for x in ["Hematología", "Química", "Uroanálisis", "Inmunología", "Perfiles", "Hormonas", "Parasitología"]], value="Perfiles")
         self.p_precio = ft.TextField(label="Precio (S/)", prefix_icon="attach_money", input_filter=ft.InputFilter(regex_string=r"[0-9.]"))
-        
         self.search_analitos_perfil = ft.TextField(hint_text="Buscar analito...", prefix_icon="search", on_change=self.filtrar_analitos_perfil)
         self.col_analitos_check = ft.Column(scroll=ft.ScrollMode.AUTO, height=300)
-        
-        # LISTA ORDENADA
         self.selected_analitos = [] 
         self.all_analitos_cache = [] 
 
@@ -71,7 +127,7 @@ class ConfiguracionView(ft.Column):
                 width=600,
                 content=ft.Column([
                     self.p_nombre, ft.Row([self.p_cat, self.p_precio]), ft.Divider(),
-                    self.search_analitos_perfil, ft.Text("Componentes (Orden de selección importa):", weight="bold", size=12),
+                    self.search_analitos_perfil, ft.Text("Componentes:", weight="bold", size=12),
                     ft.Container(content=self.col_analitos_check, border=ft.border.all(1, "grey"), border_radius=5, padding=10)
                 ], tight=True)
             ),
@@ -81,7 +137,7 @@ class ConfiguracionView(ft.Column):
             ]
         )
 
-        # --- UI ---
+        # --- UI PRINCIPAL ---
         self.controls = [
             ft.Text("Configuración", size=30, weight="bold", color="#37474F"),
             ft.Tabs(selected_index=0, animation_duration=300, tabs=[
@@ -106,6 +162,11 @@ class ConfiguracionView(ft.Column):
     def cambiar_tipo_analito(self, e):
         es_num = self.n_tipo.value == "Numerico"
         self.n_min.visible = self.n_max.visible = self.n_unidad.visible = es_num
+        self.n_calculado.visible = es_num # Solo numericos pueden ser calculados
+        if self.page: self.page.update()
+
+    def cambiar_es_calculado(self, e):
+        self.n_formula.visible = self.n_calculado.value
         if self.page: self.page.update()
 
     def cargar_analitos(self):
@@ -121,14 +182,14 @@ class ConfiguracionView(ft.Column):
             for cat, lista in sorted(grupos.items()):
                 contenido_tile = []
                 for a in lista:
-                    # Mostramos el subtítulo para referencia
-                    subtitulo_text = f"Subtítulo PDF: {a['subtituloReporte']}" if a.get('subtituloReporte') else "Subtítulo PDF: (Ninguno)"
+                    subtitulo_text = f"Sub: {a['subtituloReporte']}" if a.get('subtituloReporte') else ""
+                    es_calc_text = " (Calculado)" if a.get('esCalculado') else ""
                     
                     row = ft.Container(
                         content=ft.Row([
                             ft.Column([
-                                ft.Text(a['nombre'], weight="bold", size=14),
-                                ft.Text(subtitulo_text, size=11, italic=True, color="grey")
+                                ft.Text(f"{a['nombre']}{es_calc_text}", weight="bold", size=14),
+                                ft.Text(f"{subtitulo_text}", size=11, italic=True, color="grey")
                             ], expand=True),
                             ft.Container(content=ft.Text(a['tipoDato'], size=10, color="white"), bgcolor="blue" if a['tipoDato']=="Numerico" else "orange", padding=5, border_radius=5),
                             ft.IconButton("edit", icon_color="blue", data=a, on_click=self.editar_analito_click)
@@ -147,6 +208,7 @@ class ConfiguracionView(ft.Column):
 
     def abrir_nuevo_analito(self, e):
         self.editando_analito_id = None
+        self.btn_rangos.visible = False # No se pueden agregar rangos hasta que exista el analito
         self.n_nombre.value = ""
         self.n_cat.value = "Hematología"
         self.n_subtitulo.value = ""
@@ -154,23 +216,34 @@ class ConfiguracionView(ft.Column):
         self.n_min.value = ""
         self.n_max.value = ""
         self.n_ref.value = ""
+        self.n_calculado.value = False
+        self.n_formula.value = ""
+        self.cambiar_tipo_analito(None)
+        self.cambiar_es_calculado(None)
         e.page.open(self.dialog_analito)
 
     def editar_analito_click(self, e):
         data = e.control.data
         self.editando_analito_id = data['id']
+        self.analito_actual_para_rangos = data['id']
+        self.btn_rangos.visible = True # Habilitar gestion de rangos
+
         self.n_nombre.value = data['nombre']
         self.n_cat.value = data['categoria']
-        # Recuperamos el subtítulo si existe
         self.n_subtitulo.value = data['subtituloReporte'] if data.get('subtituloReporte') else ""
-        
         self.n_tipo.value = data['tipoDato']
         self.n_metodo.value = data['metodo']
         self.n_unidad.value = data['unidad'] or ""
-        self.n_min.value = str(data['valorRefMin']) if data['valorRefMin'] else ""
-        self.n_max.value = str(data['valorRefMax']) if data['valorRefMax'] else ""
+        self.n_min.value = str(data['valorRefMin']) if data['valorRefMin'] is not None else ""
+        self.n_max.value = str(data['valorRefMax']) if data['valorRefMax'] is not None else ""
         self.n_ref.value = data['referenciaVisual'] or ""
+        
+        # Cargar datos nuevos
+        self.n_calculado.value = bool(data.get('esCalculado'))
+        self.n_formula.value = data.get('formula') or ""
+        
         self.cambiar_tipo_analito(None)
+        self.cambiar_es_calculado(None)
         e.page.open(self.dialog_analito)
 
     def guardar_analito(self, e):
@@ -181,14 +254,16 @@ class ConfiguracionView(ft.Column):
 
         datos = {
             'nombre': self.n_nombre.value,
-            'categoria': self.n_cat.value, # Categoría General (Dropdown)
-            'subtitulo': self.n_subtitulo.value, # Subtítulo PDF (Texto Libre)
+            'categoria': self.n_cat.value,
+            'subtitulo': self.n_subtitulo.value,
             'tipoDato': self.n_tipo.value,
             'metodo': self.n_metodo.value,
             'unidad': self.n_unidad.value if self.n_tipo.value == "Numerico" else None,
             'min': self.n_min.value if self.n_tipo.value == "Numerico" else None,
             'max': self.n_max.value if self.n_tipo.value == "Numerico" else None,
-            'refVisual': self.n_ref.value
+            'refVisual': self.n_ref.value,
+            'formula': self.n_formula.value if self.n_calculado.value else None,
+            'esCalculado': 1 if self.n_calculado.value else 0
         }
         
         if self.editando_analito_id:
@@ -200,6 +275,89 @@ class ConfiguracionView(ft.Column):
             
         e.page.close(self.dialog_analito)
         self.cargar_analitos()
+
+    # --- LÓGICA DE RANGOS DE REFERENCIA (SUB-MODAL) ---
+    def abrir_gestionar_rangos(self, e):
+        self.cargar_tabla_rangos()
+        e.page.open(self.dialog_rangos)
+
+    def cargar_tabla_rangos(self):
+        # SQL DIRECTO AQUÍ PARA NO MODIFICAR DATABASE.PY
+        if not self.analito_actual_para_rangos: return
+        try:
+            self.tabla_rangos.rows.clear()
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, genero, unidadEdad, edadMin, edadMax, rangoMin, rangoMax, panicoMin, panicoMax, textoInterpretacion FROM RangosReferencia WHERE analitoId = ? ORDER BY unidadEdad, edadMin", (self.analito_actual_para_rangos,))
+            filas = cursor.fetchall()
+            
+            for r in filas:
+                rid, gen, uni, emin, emax, rmin, rmax, pmin, pmax, txt = r
+                
+                # Formateo visual
+                rango_txt = f"{rmin} - {rmax}"
+                panico_txt = ""
+                if pmin or pmax: panico_txt = f"<{pmin} | >{pmax}"
+                
+                edad_txt = f"{emin}-{emax} {uni}"
+
+                self.tabla_rangos.rows.append(ft.DataRow(cells=[
+                    ft.DataCell(ft.Text(gen)),
+                    ft.DataCell(ft.Text(edad_txt)),
+                    ft.DataCell(ft.Text(rango_txt)),
+                    ft.DataCell(ft.Text(panico_txt, color="red")),
+                    ft.DataCell(ft.Text(txt or "")),
+                    ft.DataCell(ft.IconButton("delete", icon_color="red", data=rid, on_click=self.eliminar_rango)),
+                ]))
+            conn.close()
+            if self.tabla_rangos.page: self.tabla_rangos.update()
+        except Exception as ex:
+            print(f"Error cargando rangos: {ex}")
+
+    def agregar_rango(self, e):
+        if not self.r_val_min.value or not self.r_val_max.value: return
+        try:
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO RangosReferencia (analitoId, genero, unidadEdad, edadMin, edadMax, rangoMin, rangoMax, panicoMin, panicoMax, textoInterpretacion)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                self.analito_actual_para_rangos,
+                self.r_genero.value,
+                self.r_unidad.value,
+                int(self.r_edad_min.value),
+                int(self.r_edad_max.value),
+                float(self.r_val_min.value),
+                float(self.r_val_max.value),
+                float(self.r_panico_min.value) if self.r_panico_min.value else None,
+                float(self.r_panico_max.value) if self.r_panico_max.value else None,
+                self.r_texto.value
+            ))
+            conn.commit()
+            conn.close()
+            
+            # Limpiar campos
+            self.r_val_min.value = ""
+            self.r_val_max.value = ""
+            self.r_panico_min.value = ""
+            self.r_panico_max.value = ""
+            self.r_texto.value = ""
+            self.r_val_min.update()
+            
+            self.cargar_tabla_rangos() # Recargar tabla
+            
+        except Exception as ex:
+            self.mostrar_snack(e, f"Error SQL: {ex}", "red")
+
+    def eliminar_rango(self, e):
+        rid = e.control.data
+        try:
+            conn = db.get_connection()
+            conn.cursor().execute("DELETE FROM RangosReferencia WHERE id = ?", (rid,)).commit()
+            conn.close()
+            self.cargar_tabla_rangos()
+        except: pass
 
     # --- LÓGICA PERFILES ---
     def cargar_perfiles(self):
