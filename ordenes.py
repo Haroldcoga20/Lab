@@ -249,7 +249,13 @@ class OrdenesView(ft.Column):
                     if a['unidad']: label_text += f" ({a['unidad']})"
                     val = a['valorResultado'] or ""
                     
-                    if a['tipoDato'] == 'Opciones':
+                    es_calculado = bool(a.get('esCalculado'))
+
+                    if es_calculado:
+                        # Si es calculado, se muestra deshabilitado y quizás con un color diferente
+                        label_text += " [Calculado]"
+                        ctl = ft.TextField(label=label_text, value=val, read_only=True, bgcolor="#EEEEEE")
+                    elif a['tipoDato'] == 'Opciones':
                         ops = db.obtener_opciones_analito(a['AnalitoID'])
                         ctl = ft.Dropdown(label=label_text, value=val, options=[ft.dropdown.Option(op) for op in ops], dense=True)
                     elif a['tipoDato'] == 'Texto':
@@ -257,7 +263,10 @@ class OrdenesView(ft.Column):
                     else:
                         ctl = ft.TextField(label=label_text, value=val, keyboard_type=ft.KeyboardType.NUMBER)
                     
-                    self.input_controls[a['AnalitoID']] = ctl
+                    # Si no es calculado, lo agregamos al diccionario de inputs para guardar
+                    if not es_calculado:
+                        self.input_controls[a['AnalitoID']] = ctl
+
                     columna_inputs.controls.append(ctl)
                 
                 self.tabs_resultados.tabs.append(

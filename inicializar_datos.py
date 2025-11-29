@@ -62,7 +62,8 @@ def cargar_datos_reales():
                     db.agregar_analito({
                         'nombre': a['nombre'], 'unidad': a['unidad'], 'categoria': a['cat'],
                         'subtitulo': a['sub'], 'tipoDato': a['tipo'], 'metodo': "",
-                        'min': a.get('min'), 'max': a.get('max'), 'refVisual': a['ref']
+                        'min': a.get('min'), 'max': a.get('max'), 'refVisual': a['ref'],
+                        'formula': None, 'esCalculado': 0
                     })
                     cursor.execute("SELECT @@IDENTITY")
                     aid = cursor.fetchone()[0]

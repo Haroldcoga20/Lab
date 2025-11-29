@@ -37,6 +37,10 @@ class ConfiguracionView(ft.Column):
         self.n_min = ft.TextField(label="Min", width=80)
         self.n_max = ft.TextField(label="Max", width=80)
         self.n_ref = ft.TextField(label="Ref. Visual")
+        self.n_es_calculado = ft.Checkbox(label="¿Es Calculado?", value=False)
+        self.n_formula = ft.TextField(label="Fórmula (Ej: [HB] * 3)", visible=True)
+
+        self.btn_rangos = ft.ElevatedButton("Gestionar Rangos", icon="list", on_click=self.abrir_dialog_rangos)
 
         self.dialog_analito = ft.AlertDialog(
             title=ft.Text("Analito"),
@@ -45,9 +49,51 @@ class ConfiguracionView(ft.Column):
                 self.n_cat,      # Categoría General
                 self.n_subtitulo,# Subtítulo PDF
                 self.n_tipo, self.n_metodo,
-                ft.Row([self.n_min, self.n_max, self.n_unidad]), self.n_ref
+                ft.Row([self.n_min, self.n_max, self.n_unidad]), self.n_ref,
+                ft.Divider(),
+                self.n_es_calculado, self.n_formula,
+                ft.Divider(),
+                self.btn_rangos
             ], tight=True, width=400),
             actions=[ft.TextButton("Guardar", on_click=self.guardar_analito)]
+        )
+
+        # --- DIALOG RANGOS ---
+        self.r_genero = ft.Dropdown(label="Género", options=[ft.dropdown.Option("Ambos"), ft.dropdown.Option("M"), ft.dropdown.Option("F")], value="Ambos", width=100)
+        self.r_unidad_edad = ft.Dropdown(label="Unidad", options=[ft.dropdown.Option("Años"), ft.dropdown.Option("Meses"), ft.dropdown.Option("Días")], value="Años", width=100)
+        self.r_edad_min = ft.TextField(label="Edad Min", width=80, value="0")
+        self.r_edad_max = ft.TextField(label="Edad Max", width=80, value="150")
+        self.r_val_min = ft.TextField(label="Ref Min", width=80)
+        self.r_val_max = ft.TextField(label="Ref Max", width=80)
+        self.r_pan_min = ft.TextField(label="Pánico Min", width=80)
+        self.r_pan_max = ft.TextField(label="Pánico Max", width=80)
+        self.r_texto = ft.TextField(label="Interpretación (Opcional)", expand=True)
+        self.editando_rango_id = None # Para saber si estamos editando
+
+        self.btn_guardar_rango = ft.ElevatedButton("Guardar Rango", on_click=self.guardar_rango_click)
+        self.btn_cancelar_edicion = ft.TextButton("Cancelar Edición", on_click=self.cancelar_edicion_rango, visible=False)
+
+        self.tabla_rangos = ft.DataTable(columns=[
+            ft.DataColumn(ft.Text("Sexo")),
+            ft.DataColumn(ft.Text("Edad")),
+            ft.DataColumn(ft.Text("Rango")),
+            ft.DataColumn(ft.Text("Pánico")),
+            ft.DataColumn(ft.Text("Acciones")),
+        ], rows=[])
+
+        self.dialog_rangos = ft.AlertDialog(
+            title=ft.Text("Rangos de Referencia"),
+            content=ft.Container(
+                width=700,
+                content=ft.Column([
+                    ft.Row([self.r_genero, self.r_unidad_edad, self.r_edad_min, self.r_edad_max]),
+                    ft.Row([self.r_val_min, self.r_val_max, self.r_pan_min, self.r_pan_max]),
+                    ft.Row([self.r_texto, self.btn_guardar_rango, self.btn_cancelar_edicion]),
+                    ft.Divider(),
+                    ft.Container(content=self.tabla_rangos, height=200, scroll=ft.ScrollMode.AUTO)
+                ], tight=True)
+            ),
+            actions=[ft.TextButton("Cerrar", on_click=lambda e: self.page.close(self.dialog_rangos))]
         )
 
         # --- TAB 2: PERFILES ---
@@ -154,6 +200,9 @@ class ConfiguracionView(ft.Column):
         self.n_min.value = ""
         self.n_max.value = ""
         self.n_ref.value = ""
+        self.n_es_calculado.value = False
+        self.n_formula.value = ""
+        self.btn_rangos.visible = False # No se pueden gestionar rangos hasta guardar
         e.page.open(self.dialog_analito)
 
     def editar_analito_click(self, e):
@@ -170,6 +219,12 @@ class ConfiguracionView(ft.Column):
         self.n_min.value = str(data['valorRefMin']) if data['valorRefMin'] else ""
         self.n_max.value = str(data['valorRefMax']) if data['valorRefMax'] else ""
         self.n_ref.value = data['referenciaVisual'] or ""
+
+        # Campos nuevos
+        self.n_es_calculado.value = bool(data.get('esCalculado'))
+        self.n_formula.value = data.get('formula') or ""
+
+        self.btn_rangos.visible = True
         self.cambiar_tipo_analito(None)
         e.page.open(self.dialog_analito)
 
@@ -188,7 +243,9 @@ class ConfiguracionView(ft.Column):
             'unidad': self.n_unidad.value if self.n_tipo.value == "Numerico" else None,
             'min': self.n_min.value if self.n_tipo.value == "Numerico" else None,
             'max': self.n_max.value if self.n_tipo.value == "Numerico" else None,
-            'refVisual': self.n_ref.value
+            'refVisual': self.n_ref.value,
+            'esCalculado': 1 if self.n_es_calculado.value else 0,
+            'formula': self.n_formula.value
         }
         
         if self.editando_analito_id:
@@ -200,6 +257,100 @@ class ConfiguracionView(ft.Column):
             
         e.page.close(self.dialog_analito)
         self.cargar_analitos()
+
+    # --- LÓGICA DE RANGOS ---
+    def abrir_dialog_rangos(self, e):
+        self.cancelar_edicion_rango(None) # Resetea formulario
+        self.cargar_rangos_tabla()
+        e.page.open(self.dialog_rangos)
+
+    def cargar_rangos_tabla(self):
+        self.tabla_rangos.rows.clear()
+        rangos = db.obtener_rangos(self.editando_analito_id)
+
+        for r in rangos:
+            self.tabla_rangos.rows.append(ft.DataRow(cells=[
+                ft.DataCell(ft.Text(r['genero'])),
+                ft.DataCell(ft.Text(f"{r['edadMin']}-{r['edadMax']} {r['unidadEdad']}")),
+                ft.DataCell(ft.Text(f"{r['valorMin']} - {r['valorMax']}")),
+                ft.DataCell(ft.Text(f"{r.get('panicoMin','')} - {r.get('panicoMax','')}")),
+                ft.DataCell(ft.Row([
+                    ft.IconButton("edit", icon_color="blue", data=r, on_click=self.cargar_rango_para_editar),
+                    ft.IconButton("delete", icon_color="red", data=r['id'], on_click=self.eliminar_rango_click)
+                ]))
+            ]))
+        if self.page: self.dialog_rangos.update()
+
+    def cargar_rango_para_editar(self, e):
+        r = e.control.data
+        self.editando_rango_id = r['id']
+        self.r_genero.value = r['genero']
+        self.r_unidad_edad.value = r['unidadEdad']
+        self.r_edad_min.value = str(r['edadMin'])
+        self.r_edad_max.value = str(r['edadMax'])
+        self.r_val_min.value = str(r['valorMin'])
+        self.r_val_max.value = str(r['valorMax'])
+        self.r_pan_min.value = str(r.get('panicoMin') or "")
+        self.r_pan_max.value = str(r.get('panicoMax') or "")
+        self.r_texto.value = r.get('textoInterpretacion') or ""
+
+        self.btn_guardar_rango.text = "Actualizar Rango"
+        self.btn_cancelar_edicion.visible = True
+        self.dialog_rangos.update()
+
+    def cancelar_edicion_rango(self, e):
+        self.editando_rango_id = None
+        self.r_genero.value = "Ambos"
+        self.r_unidad_edad.value = "Años"
+        self.r_edad_min.value = "0"
+        self.r_edad_max.value = "150"
+        self.r_val_min.value = ""
+        self.r_val_max.value = ""
+        self.r_pan_min.value = ""
+        self.r_pan_max.value = ""
+        self.r_texto.value = ""
+
+        self.btn_guardar_rango.text = "Agregar Rango"
+        self.btn_cancelar_edicion.visible = False
+        if self.page: self.dialog_rangos.update()
+
+    def guardar_rango_click(self, e):
+        try:
+            d = {
+                'analitoId': self.editando_analito_id,
+                'genero': self.r_genero.value,
+                'unidadEdad': self.r_unidad_edad.value,
+                'edadMin': float(self.r_edad_min.value),
+                'edadMax': float(self.r_edad_max.value),
+                'valorMin': float(self.r_val_min.value),
+                'valorMax': float(self.r_val_max.value),
+                'panicoMin': float(self.r_pan_min.value) if self.r_pan_min.value else None,
+                'panicoMax': float(self.r_pan_max.value) if self.r_pan_max.value else None,
+                'textoInterpretacion': self.r_texto.value
+            }
+
+            if self.editando_rango_id:
+                if db.editar_rango(self.editando_rango_id, d):
+                    self.mostrar_snack(e, "Rango actualizado")
+                    self.cancelar_edicion_rango(None)
+                    self.cargar_rangos_tabla()
+                else:
+                    self.mostrar_snack(e, "Error al actualizar", "red")
+            else:
+                if db.agregar_rango(d):
+                    self.mostrar_snack(e, "Rango agregado")
+                    self.cancelar_edicion_rango(None)
+                    self.cargar_rangos_tabla()
+                else:
+                    self.mostrar_snack(e, "Error al agregar", "red")
+
+        except ValueError:
+            self.mostrar_snack(e, "Error: Revise que los campos numéricos sean válidos", "red")
+
+    def eliminar_rango_click(self, e):
+        rid = e.control.data
+        db.eliminar_rango(rid)
+        self.cargar_rangos_tabla()
 
     # --- LÓGICA PERFILES ---
     def cargar_perfiles(self):

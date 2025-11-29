@@ -134,9 +134,9 @@ class DatabaseManager:
         if not conn: return
         try:
             conn.cursor().execute("""
-                INSERT INTO Analitos (nombre, unidad, categoria, subtituloReporte, tipoDato, metodo, valorRefMin, valorRefMax, referenciaVisual)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], d.get('min'), d.get('max'), d['refVisual'])).commit()
+                INSERT INTO Analitos (nombre, unidad, categoria, subtituloReporte, tipoDato, metodo, valorRefMin, valorRefMax, referenciaVisual, formula, esCalculado)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], d.get('min'), d.get('max'), d['refVisual'], d.get('formula'), d.get('esCalculado'))).commit()
         finally: conn.close()
 
     def editar_analito(self, id_analito, d):
@@ -145,9 +145,56 @@ class DatabaseManager:
         try:
             conn.cursor().execute("""
                 UPDATE Analitos 
-                SET nombre=?, unidad=?, categoria=?, subtituloReporte=?, tipoDato=?, metodo=?, valorRefMin=?, valorRefMax=?, referenciaVisual=?
+                SET nombre=?, unidad=?, categoria=?, subtituloReporte=?, tipoDato=?, metodo=?, valorRefMin=?, valorRefMax=?, referenciaVisual=?, formula=?, esCalculado=?
                 WHERE id=?
-            """, (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], d.get('min'), d.get('max'), d['refVisual'], id_analito)).commit()
+            """, (d['nombre'], d.get('unidad'), d['categoria'], d['subtitulo'], d['tipoDato'], d['metodo'], d.get('min'), d.get('max'), d['refVisual'], d.get('formula'), d.get('esCalculado'), id_analito)).commit()
+        finally: conn.close()
+
+    # --- RANGOS DE REFERENCIA ---
+    def obtener_rangos(self, analito_id):
+        conn = self.get_connection()
+        if not conn: return []
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM RangosReferencia WHERE analitoId = ? ORDER BY unidadEdad, genero ASC", (analito_id,))
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        finally: conn.close()
+
+    def agregar_rango(self, d):
+        conn = self.get_connection()
+        if not conn: return False
+        try:
+            conn.cursor().execute("""
+                INSERT INTO RangosReferencia (analitoId, genero, unidadEdad, edadMin, edadMax, valorMin, valorMax, panicoMin, panicoMax, textoInterpretacion)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (d['analitoId'], d['genero'], d['unidadEdad'], d['edadMin'], d['edadMax'], d['valorMin'], d['valorMax'], d.get('panicoMin'), d.get('panicoMax'), d.get('textoInterpretacion'))).commit()
+            return True
+        except Exception as e:
+            print(f"Error agregando rango: {e}")
+            return False
+        finally: conn.close()
+
+    def editar_rango(self, id_rango, d):
+        conn = self.get_connection()
+        if not conn: return False
+        try:
+            conn.cursor().execute("""
+                UPDATE RangosReferencia
+                SET genero=?, unidadEdad=?, edadMin=?, edadMax=?, valorMin=?, valorMax=?, panicoMin=?, panicoMax=?, textoInterpretacion=?
+                WHERE id=?
+            """, (d['genero'], d['unidadEdad'], d['edadMin'], d['edadMax'], d['valorMin'], d['valorMax'], d.get('panicoMin'), d.get('panicoMax'), d.get('textoInterpretacion'), id_rango)).commit()
+            return True
+        except: return False
+        finally: conn.close()
+
+    def eliminar_rango(self, id_rango):
+        conn = self.get_connection()
+        if not conn: return False
+        try:
+            conn.cursor().execute("DELETE FROM RangosReferencia WHERE id=?", (id_rango,)).commit()
+            return True
+        except: return False
         finally: conn.close()
 
     # --- GESTIÓN DE PERFILES (CON ORDEN) ---
@@ -286,7 +333,7 @@ class DatabaseManager:
                 
                 for aid in analitos_ids:
                     if cursor.execute("SELECT COUNT(*) FROM OrdenResultados WHERE ordenTrabajoId = ? AND analitoId = ?", (orden_id, aid)).fetchone()[0] == 0:
-                        cursor.execute("INSERT INTO OrdenResultados (ordenTrabajoId, perfilExamenId, analitoId, valorResultado) VALUES (?, ?, ?, '')", (orden_id, pid, aid)) 
+                        cursor.execute("INSERT INTO OrdenResultados (ordenTrabajoId, perfilExamenId, analitoId, valorResultado, estado) VALUES (?, ?, ?, '', 'Pendiente')", (orden_id, pid, aid))
             conn.commit()
             return True
         except Exception as e:
@@ -316,7 +363,9 @@ class DatabaseManager:
         if not conn: return []
         try:
             cursor = conn.cursor()
-            cursor.execute("""
+            # Esta consulta compleja realiza el cruce con RangosReferencia
+            # basándose en la edad y género del paciente de la orden actual.
+            query = """
                 SELECT 
                     r.analitoId, 
                     a.nombre, 
@@ -324,17 +373,41 @@ class DatabaseManager:
                     a.unidad, 
                     r.valorResultado, 
                     a.id as AnalitoID,
-                    a.referenciaVisual,
+
+                    -- Priorizamos el rango dinámico si existe, sino el visual estático
+                    CASE
+                        WHEN rr.id IS NOT NULL THEN CONCAT(rr.valorMin, ' - ', rr.valorMax, ' ', rr.textoInterpretacion)
+                        ELSE a.referenciaVisual
+                    END as referenciaVisual,
+
+                    rr.valorMin as refMinCalculado,
+                    rr.valorMax as refMaxCalculado,
+                    rr.panicoMin,
+                    rr.panicoMax,
+
                     a.metodo,
+                    a.esCalculado,
+                    a.formula,
+                    r.estado,
                     ISNULL(a.subtituloReporte, a.categoria) as categoria, 
                     p.nombre as Perfil
                 FROM OrdenResultados r 
+                JOIN OrdenesTrabajo ot ON r.ordenTrabajoId = ot.id
+                JOIN Pacientes pac ON ot.pacienteId = pac.id
                 JOIN Analitos a ON r.analitoId = a.id
                 JOIN PerfilesExamen p ON r.perfilExamenId = p.id
                 LEFT JOIN DetallePerfilAnalito dpa ON r.perfilExamenId = dpa.perfilExamenId AND r.analitoId = dpa.analitoId
+
+                -- JOIN Complejo para Rangos de Referencia
+                LEFT JOIN RangosReferencia rr ON rr.analitoId = a.id
+                    AND rr.unidadEdad = pac.unidadEdad
+                    AND (rr.genero = 'Ambos' OR rr.genero = pac.genero)
+                    AND pac.edad >= rr.edadMin AND pac.edad <= rr.edadMax
+
                 WHERE r.ordenTrabajoId = ? 
                 ORDER BY p.nombre, ISNULL(dpa.orden, 9999), a.nombre
-            """, (orden_id,))
+            """
+            cursor.execute(query, (orden_id,))
             cols = [c[0] for c in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
         finally: conn.close()
@@ -351,7 +424,14 @@ class DatabaseManager:
         try:
             cursor = conn.cursor()
             for aid, valor in resultados_dict.items():
-                cursor.execute("UPDATE OrdenResultados SET valorResultado = ? WHERE ordenTrabajoId = ? AND analitoId = ?", (valor, orden_id, aid))
+                cursor.execute("""
+                    UPDATE OrdenResultados
+                    SET valorResultado = ?, estado = 'Ingresado'
+                    WHERE ordenTrabajoId = ? AND analitoId = ?
+                """, (valor, orden_id, aid))
+
+            # Nota: Mantenemos la lógica de marcar la ORDEN como completada por ahora.
+            # En una implementación más estricta, verificaríamos si todos los resultados están validados.
             cursor.execute("UPDATE OrdenesTrabajo SET estado = 'Completado', fechaCompletado = GETDATE() WHERE id = ?", (orden_id,))
             conn.commit()
         finally: conn.close()
