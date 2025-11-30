@@ -16,12 +16,12 @@ def main(page: ft.Page):
     db_connected = db.connect()
 
     if not db_connected:
-        page.open(ft.SnackBar(
+        page.add(ft.SnackBar(
             content=ft.Text("No se pudo conectar a la base de datos SQL Server local."),
             bgcolor=ft.Colors.RED,
         ))
     else:
-        page.open(ft.SnackBar(
+        page.add(ft.SnackBar(
             content=ft.Text("Conectado a Base de Datos Exitosamente"),
             bgcolor=ft.Colors.GREEN,
         ))
@@ -50,7 +50,7 @@ def main(page: ft.Page):
                 icon=ft.Icons.PRINT, selected_icon=ft.Icons.PRINT, label="Informes"
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.SETTINGS, selected_icon=ft.Icons.SETTINGS_ODD, label="Configuración"
+                icon=ft.Icons.SETTINGS, selected_icon=ft.Icons.SETTINGS, label="Configuración"
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icons.MEDICAL_SERVICES, selected_icon=ft.Icons.MEDICAL_SERVICES, label="Médicos"
@@ -73,7 +73,7 @@ def main(page: ft.Page):
         elif index == 1:
             content_area.controls.append(PacientesView(page))
         elif index == 2:
-            content_area.controls.append(CrearOrdenView(page)) # Might update this init too if not passed
+            content_area.controls.append(CrearOrdenView()) # Might update this init too if not passed
         elif index == 3:
             content_area.controls.append(ResultadosView(page))
         elif index == 4:

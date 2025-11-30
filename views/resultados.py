@@ -84,8 +84,10 @@ class ResultadosView(ft.Column):
             ], expand=True)
         ]
 
+    def did_mount(self):
+        # ✅ NUEVO: La carga se realiza aquí de forma segura
         self.load_initial_data()
-        self.load_ordenes(initial=True)
+        self.load_ordenes(initial=False)    
 
     def load_initial_data(self):
         try:
@@ -103,7 +105,8 @@ class ResultadosView(ft.Column):
         self.dd_filter_medico.value = None
         self.dd_filter_estado.value = "Todos"
         self.load_ordenes()
-
+    
+        
     def load_ordenes(self, initial=False):
         self.lv_ordenes.controls.clear()
         try:

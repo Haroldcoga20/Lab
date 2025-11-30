@@ -9,11 +9,11 @@ def ConfiguracionView(page: ft.Page):
         tabs=[
             ft.Tab(
                 text="Analitos",
-                content=AnalitosView()
+                content=AnalitosView(page)
             ),
             ft.Tab(
                 text="Perfiles",
-                content=PerfilesView()
+                content=PerfilesView(page)
             ),
         ],
         expand=True,
