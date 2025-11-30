@@ -21,8 +21,6 @@ class ResultadosView(ft.Column):
             options=[],
             on_change=self.apply_filters
         )
-        # Status filter for Results? User requested for "views/resultados.py".
-        # Defaults to Pendiente/Completado (or just Pendiente usually).
         self.dd_filter_estado = ft.Dropdown(
             label="Estado",
             width=150,
@@ -63,7 +61,7 @@ class ResultadosView(ft.Column):
             ft.Row([
                 # Left Panel
                 ft.Container(
-                    width=350, # Wider for filters?
+                    width=350,
                     content=ft.Column([
                         ft.Text("Lista de Órdenes", weight=ft.FontWeight.BOLD),
                         ft.Divider(),
@@ -83,9 +81,15 @@ class ResultadosView(ft.Column):
                 )
             ], expand=True)
         ]
+        
+        # --- CAMBIO IMPORTANTE: Eliminamos las llamadas de carga del __init__ ---
+        # self.load_initial_data()  <- ESTO CAUSABA EL ERROR
+        # self.load_ordenes(initial=True) <- ESTO TAMBIÉN
 
+    def did_mount(self):
+        # --- SOLUCIÓN: Movemos la carga aquí, cuando la vista ya es visible ---
         self.load_initial_data()
-        self.load_ordenes(initial=True)
+        self.load_ordenes()
 
     def load_initial_data(self):
         try:
@@ -111,14 +115,6 @@ class ResultadosView(ft.Column):
             medico_id = self.dd_filter_medico.value
             estado = self.dd_filter_estado.value
 
-            # Use the filtered query logic
-            # If default (no filters), maybe only show "Pendiente"?
-            # User requirement: "Dropdown: Estado (Todos, Pendiente, Completado)".
-            # If "Todos" is selected, show all. If "Pendiente" (default maybe?), show pending.
-            # But initial value is "Todos" in code above. Let's stick to "Todos" or filter if user wants.
-            # Wait, usually Results view shows Pending by default.
-            # I'll let the Dropdown control it. Default is "Todos".
-
             ordenes = db.get_ordenes_filtradas(search, medico_id, estado)
 
             if not ordenes:
@@ -138,9 +134,8 @@ class ResultadosView(ft.Column):
                             on_click=lambda e, x=oid: self.load_detalle_orden(x)
                         )
                     )
-
-            if not initial:
-                self.update()
+            
+            self.update()
         except Exception as e:
             print(f"Error loading orders: {e}")
 
