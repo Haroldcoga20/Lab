@@ -53,10 +53,23 @@ class DatabaseManager:
             self.connection = None
 
     def get_connection(self):
-        """Returns the current connection, reconnecting if necessary."""
-        if self.connection is None:
-            self.connect()
-        return self.connection
+        try:
+            # Si no existe, conectamos
+            if not hasattr(self, 'connection') or self.connection is None:
+                self.connection = pyodbc.connect(self.connection_string)
+            
+            # Probamos si está viva
+            try:
+                cursor = self.connection.cursor()
+                cursor.execute("SELECT 1")
+            except Exception:
+                # Si falló, reconectamos a la fuerza
+                self.connection = pyodbc.connect(self.connection_string)
+            
+            return self.connection
+        except Exception as e:
+            print(f"Error connecting to DB: {e}")
+            return None
 
     def sanitize_input(self, value):
         if value == '':
@@ -562,38 +575,63 @@ class DatabaseManager:
 
         conn.commit()
 
-    def get_smart_reference(self, analito_id, p_genero, p_edad, p_unidad):
-        vals = self.get_patient_range_values(analito_id, p_genero, p_edad, p_unidad)
-        # vals: (min, max, pmin, pmax, visual, interpretacion)
-        # We need to construct string
+    # REEMPLAZA TU FUNCIÓN get_smart_reference ACTUAL CON ESTA:
+    def get_smart_reference(self, analito_id, genero_paciente, edad_paciente, unidad_edad_paciente):
+        conn = self.get_connection()
+        if not conn: return ""
+        try:
+            cursor = conn.cursor()
+            
+            # 1. HACEMOS LA CONSULTA DIRECTA AQUÍ (Pidiendo explícitamente las 6 columnas)
+            # Nota: Usamos ISNULL(col, 0) o manejo de NULLs si fuera necesario, pero aquí Python lo maneja.
+            query = """
+                SELECT valorMin, valorMax, panicoMin, panicoMax, referenciaVisualEspecifica, textoInterpretacion
+                FROM RangosReferencia
+                WHERE analitoId = ? 
+                AND (genero = ? OR genero = 'Ambos' OR genero = 'Indistinto')
+                AND unidadEdad = ?
+                AND ? BETWEEN edadMin AND edadMax
+            """
+            # Ejecutamos buscando al paciente específico
+            cursor.execute(query, (analito_id, genero_paciente, unidad_edad_paciente, edad_paciente))
+            row = cursor.fetchone()
+            
+            # 2. SI ENCONTRAMOS RANGO ESPECÍFICO
+            if row:
+                # Ahora sí, row tiene 6 elementos porque los pedimos arriba en el SELECT
+                r_min, r_max, r_pmin, r_pmax, r_visual_esp, r_interp = row
+                
+                # Lógica de Prioridades para mostrar el texto
+                
+                # A. Si tiene Texto Largo (Ej: Tabla de semanas), gana esto.
+                if r_visual_esp and str(r_visual_esp).strip():
+                    return str(r_visual_esp)
+                
+                # B. Si tiene Interpretación Corta (Ej: "Negativo" o "R.N."), lo mostramos.
+                if r_interp and str(r_interp).strip():
+                    # Si además tiene números, los ponemos juntos: "R.N.: 10 - 20"
+                    if r_min is not None and r_max is not None:
+                        return f"{r_interp}: {r_min} - {r_max}"
+                    return str(r_interp)
 
-        if not vals: return ""
+                # C. Si solo son números, mostramos el rango numérico
+                if r_min is not None and r_max is not None:
+                    return f"{r_min} - {r_max}"
+            
+            # 3. SI NO HAY RANGO ESPECÍFICO (Buscamos el genérico del Analito)
+            cursor.execute("SELECT referenciaVisual, valorRefMin, valorRefMax FROM Analitos WHERE id = ?", (analito_id,))
+            row_gen = cursor.fetchone()
+            if row_gen:
+                ref_vis, v_min, v_max = row_gen
+                if ref_vis: return str(ref_vis)
+                if v_min is not None and v_max is not None: return f"{v_min} - {v_max}"
+            
+            return "" # Nada encontrado
 
-        # Unpack
-        r_min, r_max, r_pmin, r_pmax, r_visual, r_interp = vals
-
-        # We also need gender to prepend H/M if needed.
-        # Actually `get_patient_range_values` already filtered by gender.
-        # But we don't know which row matched exactly if we return aggregated values?
-        # The prompt says "Si es diferenciado por sexo, antepón H:".
-        # This implies we should know the *source row* details.
-        # So maybe `get_patient_range_values` isn't enough for the full string logic
-        # unless we duplicate the logic or return the row.
-        # But `get_smart_reference` IS the one making the string.
-        # So `get_smart_reference` should stay as is, and `get_patient_range_values`
-        # is a helper for the *ResultadosView* numeric check.
-
-        # Let's keep `get_smart_reference` logic here, but use `get_patient_range_values`
-        # logic structure.
-        # Actually, let's reuse `get_patient_range_values` logic inside `get_smart_reference`
-        # or vice-versa?
-
-        # Re-implementing logic to allow `get_patient_range_values` to be used by UI.
-        # `get_smart_reference` uses the logic to build string.
-
-        # Let's write `get_patient_range_values` first.
-        return self._build_smart_ref_string(analito_id, p_genero, p_edad, p_unidad)
-
+        except Exception as e:
+            print(f"Error getting smart reference: {e}")
+            return ""
+ 
     def get_patient_range_values(self, analito_id, p_genero, p_edad, p_unidad):
         """
         Returns (min, max, panicoMin, panicoMax) for validation.

@@ -54,9 +54,11 @@ class OrdenesView(ft.Column):
             self.lv_ordenes
         ]
 
+    def did_mount(self):
+        # ✅ NUEVO: La carga se realiza aquí de forma segura
         self.load_initial_data()
-        self.load_ordenes(initial=True)
-
+        self.load_ordenes(initial=False)
+        
     def load_initial_data(self):
         try:
             medicos = db.get_all_medicos()
@@ -183,7 +185,7 @@ class ConfigImpresionDialog:
         self.chk_firma = ft.Checkbox(label="Incluir Firma Digital", value=True)
 
         self.list_view = ft.ListView(expand=True)
-        self.render_list()
+        
 
         self.dialog = ft.AlertDialog(
             title=ft.Text(f"Configurar Impresión - Orden #{orden_id}"),
@@ -201,6 +203,7 @@ class ConfigImpresionDialog:
                 ft.ElevatedButton("GENERAR PDF", on_click=self.generate_pdf, icon=ft.Icons.PICTURE_AS_PDF)
             ]
         )
+        self.render_list()
 
     def render_list(self):
         self.list_view.controls.clear()
