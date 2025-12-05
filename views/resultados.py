@@ -12,7 +12,9 @@ class ResultadosView(ft.Column):
         # Maps and Lists
         self.inputs_map = {} # abbr -> control (TextField/Dropdown)
         self.ordered_inputs = [] # List of controls for navigation
-        self.input_data_map = {} # control_id -> {id, type, ranges, formula, is_calc}
+        self.input_data_map = {} # Metadata store
+        self.current_orden_id = None
+        self.is_validated = False # Track validation status
 
         # Filter Toolbar
         self.txt_search = ft.TextField(
@@ -48,10 +50,18 @@ class ResultadosView(ft.Column):
         self.lv_ordenes = ft.ListView(expand=True, spacing=5, padding=10)
 
         # Right Panel: Results Detail (Grouped)
-        self.current_orden_id = None
         self.lbl_orden_info = ft.Text("Seleccione una Orden", size=18, weight=ft.FontWeight.BOLD)
-        self.result_container = ft.Column(scroll=ft.ScrollMode.ALWAYS, expand=True)
 
+        # VALIDATION SWITCH
+        self.switch_validar = ft.Switch(
+            label="Validar Orden Completa (Bloquear)",
+            value=False,
+            visible=False,
+            on_change=self.toggle_validation
+        )
+        self.lbl_validado_info = ft.Text("", color=ft.Colors.GREEN, weight=ft.FontWeight.BOLD)
+
+        self.result_container = ft.Column(scroll=ft.ScrollMode.ALWAYS, expand=True)
         self.input_controls = []
 
         # Split View
@@ -81,6 +91,7 @@ class ResultadosView(ft.Column):
                     padding=20,
                     content=ft.Column([
                         self.lbl_orden_info,
+                        ft.Row([self.switch_validar, self.lbl_validado_info]),
                         ft.Divider(),
                         self.result_container
                     ])
@@ -89,7 +100,6 @@ class ResultadosView(ft.Column):
         ]
 
     def did_mount(self):
-        # ✅ NUEVO: La carga se realiza aquí de forma segura
         self.load_initial_data()
         self.load_ordenes(initial=False)
 
@@ -144,11 +154,12 @@ class ResultadosView(ft.Column):
 
     def load_detalle_orden(self, orden_id):
         self.current_orden_id = orden_id
-        self.input_controls = [] # For saving
-        self.inputs_map = {} # For calculations
-        self.ordered_inputs = [] # For navigation
-        self.input_data_map = {} # Metadata store
+        self.input_controls = []
+        self.inputs_map = {}
+        self.ordered_inputs = []
+        self.input_data_map = {}
         self.result_container.controls.clear()
+        self.is_validated = False # Default until checked
 
         # Header
         header_tuple = db.get_orden_header(orden_id)
@@ -158,6 +169,12 @@ class ResultadosView(ft.Column):
 
         self.lbl_orden_info.value = f"Orden #{orden_id} - {paciente.nombreCompleto} ({paciente.edad} {paciente.unidadEdad})"
 
+        # Enable switch
+        self.switch_validar.visible = True
+        self.switch_validar.disabled = False # Enabled by default, will disable if valid
+        self.switch_validar.value = False
+        self.lbl_validado_info.value = ""
+
         # Set FAB (Icon Only)
         self.page_ref.floating_action_button = ft.FloatingActionButton(
             icon=ft.Icons.SAVE,
@@ -166,6 +183,20 @@ class ResultadosView(ft.Column):
         self.page_ref.update()
 
         grouped_data = db.get_resultados_grouped(orden_id)
+
+        # Check validation status from data
+        # If ANY item has state 'Validado', we consider the order validated (since it's all or nothing per requirement)
+        # But let's check the first one or loop.
+        has_validation = any(item.get('estado') == 'Validado' for group in grouped_data for item in group['items'])
+
+        if has_validation:
+            self.is_validated = True
+            self.switch_validar.value = True
+            first_val = next((item for group in grouped_data for item in group['items'] if item.get('validadoPor')), None)
+            validator = first_val['validadoPor'] if first_val else 'ADMIN'
+            self.lbl_validado_info.value = f"VALIDADO POR: {validator}"
+
+        read_only_mode = self.is_validated
 
         for group in grouped_data:
             group_title = group['title']
@@ -187,11 +218,8 @@ class ResultadosView(ft.Column):
                 current_val = item['valor']
                 aid = item['analitoId']
 
-                # Fetch ranges for logic
-                # (min, max, pmin, pmax)
                 range_vals = db.get_patient_range_values(aid, paciente.genero, paciente.edad, paciente.unidadEdad)
 
-                # Determine value to display
                 val_to_display = current_val
                 if val_to_display is None:
                     if tipo == 'Opciones':
@@ -205,7 +233,6 @@ class ResultadosView(ft.Column):
 
                 val_to_display = val_to_display or ""
 
-                # Create Controls
                 warning_icon = ft.Container(content=ft.Icon(ft.Icons.WARNING, color=ft.Colors.RED, size=16), visible=False)
 
                 input_control = None
@@ -219,7 +246,8 @@ class ResultadosView(ft.Column):
                         expand=2,
                         height=40,
                         content_padding=5,
-                        on_change=lambda e: self.on_result_change(e) # Trigger generic change
+                        disabled=read_only_mode,
+                        on_change=lambda e: self.on_result_change(e)
                     )
                 else:
                     input_control = ft.TextField(
@@ -227,13 +255,14 @@ class ResultadosView(ft.Column):
                         expand=2,
                         height=40,
                         content_padding=5,
+                        read_only=read_only_mode,
                         on_change=lambda e: self.on_result_change(e),
                         on_submit=lambda e: self.focus_next(e)
                     )
 
                 # Store Metadata for logic
                 control_meta = {
-                    'id': item['id'], # Result ID
+                    'id': item['id'],
                     'analitoId': aid,
                     'tipo': tipo,
                     'ranges': range_vals,
@@ -243,8 +272,6 @@ class ResultadosView(ft.Column):
                     'warning_icon': warning_icon
                 }
 
-                # Key maps
-                # We map control object (hashable) to metadata? No, better use ID or attach to control.data
                 input_control.data = control_meta
 
                 if item.get('abreviatura'):
@@ -257,11 +284,7 @@ class ResultadosView(ft.Column):
 
                 row_control = ft.Row([
                     ft.Text(item['nombre'], expand=2),
-                    ft.Stack([input_control, ft.Container(warning_icon, right=5, top=10)], expand=2), # Overlay icon? Or side? Side is safer layout.
-                    # Let's put icon to right of input?
-                    # Row inside cell?
-                    # ft.Row([input_control, warning_icon], expand=2) -> width issues.
-                    # Stack is okay if expanding.
+                    ft.Stack([input_control, ft.Container(warning_icon, right=5, top=10)], expand=2),
                     ft.Text(smart_ref, color=ft.Colors.BLUE, size=12, expand=2),
                     ft.Text(item['unidad'] or "", width=60, size=12),
                 ], alignment=ft.MainAxisAlignment.CENTER)
@@ -284,6 +307,59 @@ class ResultadosView(ft.Column):
         # Initial validation run
         self.run_validations_and_calcs()
         self.update()
+
+    def toggle_validation(self, e):
+        is_locking = self.switch_validar.value
+
+        if is_locking:
+            # Check for empty fields
+            empty_found = False
+            for inp in self.input_controls:
+                ctrl = inp['control']
+                if not ctrl.value:
+                    empty_found = True
+                    break
+
+            if empty_found:
+                self.switch_validar.value = False
+                self.page_ref.open(ft.SnackBar(ft.Text("No se puede validar: Hay campos vacíos."), bgcolor=ft.Colors.RED))
+                self.update()
+                return
+
+            # Save first then validate
+            self.save_all(None) # Force save
+
+            # Call DB validate
+            db.validate_orden(self.current_orden_id, "ADMIN")
+            self.lbl_validado_info.value = "VALIDADO POR: ADMIN"
+            self.page_ref.open(ft.SnackBar(ft.Text("Orden Validada y Bloqueada"), bgcolor=ft.Colors.GREEN))
+
+            # Lock UI
+            for inp in self.input_controls:
+                ctrl = inp['control']
+                if isinstance(ctrl, ft.TextField):
+                    ctrl.read_only = True
+                else:
+                    ctrl.disabled = True
+                ctrl.update()
+
+        else:
+            # Unlock
+            db.unlock_orden(self.current_orden_id)
+            self.lbl_validado_info.value = ""
+            self.page_ref.open(ft.SnackBar(ft.Text("Orden Desbloqueada"), bgcolor=ft.Colors.ORANGE))
+
+            # Unlock UI
+            for inp in self.input_controls:
+                ctrl = inp['control']
+                if isinstance(ctrl, ft.TextField):
+                    ctrl.read_only = False
+                else:
+                    ctrl.disabled = False
+                ctrl.update()
+
+        self.update()
+
 
     def run_validations_and_calcs(self):
         # 1. Recalculate Formulas
@@ -308,7 +384,7 @@ class ResultadosView(ft.Column):
 
         try:
             val = float(val_str)
-            ranges = meta['ranges'] # (min, max, pmin, pmax)
+            ranges = meta['ranges']
             if not ranges: return
 
             r_min, r_max, r_pmin, r_pmax = ranges
@@ -339,7 +415,6 @@ class ResultadosView(ft.Column):
                 formula = meta['formula']
 
                 # Replace tokens [ABBR] with values
-                # Regex to find [TOKEN]
                 tokens = re.findall(r'\[(.*?)\]', formula)
 
                 can_calc = True
@@ -356,15 +431,13 @@ class ResultadosView(ft.Column):
                             can_calc = False
                             break
                     else:
-                        can_calc = False # dependency not found
+                        can_calc = False
 
                 if can_calc:
                     try:
-                        # Unsafe eval? In local app usually accepted if restricted chars.
-                        # Basic arithmetic only.
                         allowed_chars = "0123456789.+-*/() "
                         if not all(c in allowed_chars for c in calc_expr):
-                            continue # Security check
+                            continue
 
                         res = eval(calc_expr)
                         ctrl.value = "{:.2f}".format(res)
@@ -386,6 +459,11 @@ class ResultadosView(ft.Column):
             pass
 
     def save_all(self, e):
+        if self.is_validated and self.switch_validar.value:
+             if e: # Only show toast if clicked manually, not if called by toggle
+                 self.page_ref.open(ft.SnackBar(ft.Text("Orden Validada. Desbloquee para editar."), bgcolor=ft.Colors.GREY))
+             return
+
         updates = []
         for inp in self.input_controls:
             val = inp['control'].value
@@ -394,14 +472,16 @@ class ResultadosView(ft.Column):
                 updates.append({'id': inp['id'], 'valor': val})
 
         if not updates:
-            self.page_ref.open(ft.SnackBar(ft.Text("No hay datos para guardar"), bgcolor=ft.Colors.GREY))
+            if e:
+                self.page_ref.open(ft.SnackBar(ft.Text("No hay datos para guardar"), bgcolor=ft.Colors.GREY))
             return
 
         try:
             db.update_resultado_batch(updates)
-            self.page_ref.open(ft.SnackBar(ft.Text("Resultados guardados y estado actualizado"), bgcolor=ft.Colors.GREEN))
-            # Refresh list
-            self.load_ordenes()
+            if e:
+                self.page_ref.open(ft.SnackBar(ft.Text("Resultados guardados y estado actualizado"), bgcolor=ft.Colors.GREEN))
+            # Refresh list (optional, might reset view)
+            # self.load_ordenes()
         except Exception as ex:
             print(ex)
             self.page_ref.open(ft.SnackBar(ft.Text("Error al guardar"), bgcolor=ft.Colors.RED))
