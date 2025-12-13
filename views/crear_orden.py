@@ -59,7 +59,6 @@ class CrearOrdenView(ft.Column):
             value="0.00",
             text_align=ft.TextAlign.RIGHT,
             width=150,
-            weight=ft.FontWeight.BOLD,
             keyboard_type=ft.KeyboardType.NUMBER
         )
 
