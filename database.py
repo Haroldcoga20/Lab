@@ -459,6 +459,27 @@ class DatabaseManager:
                            (medico_id, perfil_id, precio))
         conn.commit()
 
+    def get_tarifas_medico(self, medico_id):
+        conn = self.get_connection()
+        if not conn: return []
+        cursor = conn.cursor()
+        query = """
+            SELECT t.id, p.nombre, t.precioEspecial
+            FROM TarifasConvenio t
+            JOIN PerfilesExamen p ON t.perfilExamenId = p.id
+            WHERE t.medicoId = ?
+            ORDER BY p.nombre
+        """
+        cursor.execute(query, (medico_id,))
+        return cursor.fetchall()
+
+    def delete_tarifa_convenio(self, tarifa_id):
+        conn = self.get_connection()
+        if not conn: return
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM TarifasConvenio WHERE id = ?", (tarifa_id,))
+        conn.commit()
+
 
     def ensure_default_profile(self):
         conn = self.get_connection()
