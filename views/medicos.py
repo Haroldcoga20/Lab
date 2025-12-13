@@ -126,6 +126,9 @@ class MedicosView(ft.Column):
                 'tieneConvenio': self.chk_convenio.value
             }
             db.upsert_medico(data)
+
+            # If we were editing and just saved, we keep the ID selection so they can manage tarifs immediately if they want?
+            # Or clear. Usually clear is standard.
             self.clear_form()
             self.load_data()
             self.page_ref.open(ft.SnackBar(ft.Text("Médico guardado"), bgcolor=ft.Colors.GREEN))
