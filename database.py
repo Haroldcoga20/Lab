@@ -222,7 +222,20 @@ class DatabaseManager:
         """, perfil_id)
         return cursor.fetchall()
 
-    def upsert_perfil(self, data, analito_ids):
+    def get_perfil_hijos(self, perfil_id):
+        conn = self.get_connection()
+        if not conn: return []
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT p.*
+            FROM PerfilesExamen p
+            JOIN DetallePerfilComposicion dpc ON p.id = dpc.perfilHijoId
+            WHERE dpc.perfilPadreId = ?
+            ORDER BY dpc.orden ASC
+        """, perfil_id)
+        return cursor.fetchall()
+
+    def upsert_perfil(self, data, analito_ids, sub_perfil_ids=[]):
         conn = self.get_connection()
         if not conn: return
         cursor = conn.cursor()
@@ -235,7 +248,9 @@ class DatabaseManager:
                 UPDATE PerfilesExamen SET nombre=?, categoria=?, precioEstandar=?
                 WHERE id=?
             """, (data['nombre'], data['categoria'], precio, perfil_id))
+            # Limpiar relaciones anteriores
             cursor.execute("DELETE FROM DetallePerfilAnalito WHERE perfilExamenId=?", perfil_id)
+            cursor.execute("DELETE FROM DetallePerfilComposicion WHERE perfilPadreId=?", perfil_id)
         else:
             cursor.execute("""
                 INSERT INTO PerfilesExamen (nombre, categoria, precioEstandar)
@@ -244,11 +259,19 @@ class DatabaseManager:
             """, (data['nombre'], data['categoria'], precio))
             perfil_id = cursor.fetchone()[0]
 
+        # Insertar Analitos Directos
         for idx, aid in enumerate(analito_ids):
             cursor.execute("""
                 INSERT INTO DetallePerfilAnalito (perfilExamenId, analitoId, orden)
                 VALUES (?, ?, ?)
             """, (perfil_id, aid, idx))
+
+        # Insertar Sub-Perfiles
+        for idx, sub_pid in enumerate(sub_perfil_ids):
+            cursor.execute("""
+                INSERT INTO DetallePerfilComposicion (perfilPadreId, perfilHijoId, orden)
+                VALUES (?, ?, ?)
+            """, (perfil_id, sub_pid, idx))
 
         conn.commit()
 
@@ -258,6 +281,44 @@ class DatabaseManager:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM PerfilesExamen WHERE id = ?", (perfil_id,))
         conn.commit()
+
+    def get_analitos_by_perfil_recursivo(self, perfil_id):
+        """
+        Devuelve una lista de tuplas (analito_id, perfil_origen_id)
+        Traversa recursivamente los sub-perfiles.
+        """
+        results = []
+        conn = self.get_connection()
+        if not conn: return []
+        cursor = conn.cursor()
+
+        # 1. Analitos directos de este perfil
+        cursor.execute("""
+            SELECT analitoId
+            FROM DetallePerfilAnalito
+            WHERE perfilExamenId = ?
+            ORDER BY orden ASC
+        """, perfil_id)
+        direct_analitos = cursor.fetchall()
+        for row in direct_analitos:
+            results.append((row[0], perfil_id))
+
+        # 2. Analitos de sub-perfiles
+        cursor.execute("""
+            SELECT perfilHijoId
+            FROM DetallePerfilComposicion
+            WHERE perfilPadreId = ?
+            ORDER BY orden ASC
+        """, perfil_id)
+        hijos = cursor.fetchall()
+
+        for hijo in hijos:
+            hijo_id = hijo[0]
+            # Recursion: los analitos del hijo pertenecen al hijo (o sus propios hijos)
+            sub_results = self.get_analitos_by_perfil_recursivo(hijo_id)
+            results.extend(sub_results)
+
+        return results
 
     # --- PHASE 2: PACIENTES ---
     def get_all_pacientes(self):
@@ -349,17 +410,18 @@ class DatabaseManager:
         nombre = data.get('nombre')
         especialidad = self.sanitize_input(data.get('especialidad'))
         telefono = self.sanitize_input(data.get('telefono'))
+        tiene_convenio = 1 if data.get('tieneConvenio') else 0
 
         if data.get('id'):
             cursor.execute("""
-                UPDATE Medicos SET nombre=?, especialidad=?, telefono=?
+                UPDATE Medicos SET nombre=?, especialidad=?, telefono=?, tieneConvenio=?
                 WHERE id=?
-            """, (nombre, especialidad, telefono, data['id']))
+            """, (nombre, especialidad, telefono, tiene_convenio, data['id']))
         else:
             cursor.execute("""
-                INSERT INTO Medicos (nombre, especialidad, telefono)
-                VALUES (?, ?, ?)
-            """, (nombre, especialidad, telefono))
+                INSERT INTO Medicos (nombre, especialidad, telefono, tieneConvenio)
+                VALUES (?, ?, ?, ?)
+            """, (nombre, especialidad, telefono, tiene_convenio))
         conn.commit()
 
     def delete_medico(self, medico_id):
@@ -368,6 +430,56 @@ class DatabaseManager:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM Medicos WHERE id = ?", (medico_id,))
         conn.commit()
+
+    # --- TARIFAS CONVENIO ---
+    def get_tarifa_especial(self, medico_id, perfil_id):
+        conn = self.get_connection()
+        if not conn: return None
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT precioEspecial FROM TarifasConvenio
+            WHERE medicoId = ? AND perfilExamenId = ?
+        """, (medico_id, perfil_id))
+        row = cursor.fetchone()
+        return float(row[0]) if row else None
+
+    def upsert_tarifa_convenio(self, medico_id, perfil_id, precio):
+        conn = self.get_connection()
+        if not conn: return
+        cursor = conn.cursor()
+
+        # Check if exists
+        cursor.execute("SELECT id FROM TarifasConvenio WHERE medicoId=? AND perfilExamenId=?", (medico_id, perfil_id))
+        row = cursor.fetchone()
+
+        if row:
+            cursor.execute("UPDATE TarifasConvenio SET precioEspecial=? WHERE id=?", (precio, row[0]))
+        else:
+            cursor.execute("INSERT INTO TarifasConvenio (medicoId, perfilExamenId, precioEspecial) VALUES (?, ?, ?)",
+                           (medico_id, perfil_id, precio))
+        conn.commit()
+
+    def get_tarifas_medico(self, medico_id):
+        conn = self.get_connection()
+        if not conn: return []
+        cursor = conn.cursor()
+        query = """
+            SELECT t.id, p.nombre, t.precioEspecial
+            FROM TarifasConvenio t
+            JOIN PerfilesExamen p ON t.perfilExamenId = p.id
+            WHERE t.medicoId = ?
+            ORDER BY p.nombre
+        """
+        cursor.execute(query, (medico_id,))
+        return cursor.fetchall()
+
+    def delete_tarifa_convenio(self, tarifa_id):
+        conn = self.get_connection()
+        if not conn: return
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM TarifasConvenio WHERE id = ?", (tarifa_id,))
+        conn.commit()
+
 
     def ensure_default_profile(self):
         conn = self.get_connection()
@@ -387,35 +499,38 @@ class DatabaseManager:
             conn.commit()
             return cursor.fetchone()[0]
 
-    def create_orden_trabajo(self, paciente_id, medico_id, items):
+    def create_orden_trabajo(self, paciente_id, medico_id, items, total_pagar=0.0):
         conn = self.get_connection()
         if not conn: return
         cursor = conn.cursor()
 
         default_profile_id = self.ensure_default_profile()
-        total = sum(item.get('precio', 0) for item in items)
 
+        # Insertar Orden
         cursor.execute("""
             INSERT INTO OrdenesTrabajo (pacienteId, medicoId, estado, totalPagar, fechaCreacion)
             OUTPUT INSERTED.ID
             VALUES (?, ?, 'Pendiente', ?, GETDATE())
-        """, (paciente_id, medico_id, total))
+        """, (paciente_id, medico_id, total_pagar))
         orden_id = cursor.fetchone()[0]
 
+        # Insertar Items (Perfiles facturados)
         for item in items:
             if item['type'] == 'perfil':
+                # Solo guardamos el perfil Padre en OrdenPerfiles para facturación
                 cursor.execute("""
                     INSERT INTO OrdenPerfiles (ordenTrabajoId, perfilExamenId, precioCobrado)
                     VALUES (?, ?, ?)
                 """, (orden_id, item['id'], item.get('precio', 0)))
 
-                perfil_analitos = self.get_perfil_analitos(item['id'])
-                for row in perfil_analitos:
-                    analito_id = row[0]
+                # RECURSIVIDAD: Obtener todos los analitos (hijos, nietos...) con su padre inmediato
+                analitos_data = self.get_analitos_by_perfil_recursivo(item['id'])
+
+                for aid, pid in analitos_data:
                     cursor.execute("""
                         INSERT INTO OrdenResultados (ordenTrabajoId, perfilExamenId, analitoId, estado)
                         VALUES (?, ?, ?, 'Pendiente')
-                    """, (orden_id, item['id'], analito_id))
+                    """, (orden_id, pid, aid))
 
             elif item['type'] == 'analito':
                 cursor.execute("""
@@ -469,6 +584,37 @@ class DatabaseManager:
         cursor.execute("DELETE FROM OrdenesTrabajo WHERE id = ?", (orden_id,))
         conn.commit()
 
+    def validate_orden(self, orden_id, user):
+        conn = self.get_connection()
+        if not conn: return
+        cursor = conn.cursor()
+
+        # Validar Resultados
+        cursor.execute("""
+            UPDATE OrdenResultados
+            SET estado = 'Validado', validadoPor = ?
+            WHERE ordenTrabajoId = ?
+        """, (user, orden_id))
+
+        # Update Orden header if needed (optional)
+        # cursor.execute("UPDATE OrdenesTrabajo SET estado = 'Validado' WHERE id = ?", (orden_id,))
+
+        conn.commit()
+
+    def unlock_orden(self, orden_id):
+        conn = self.get_connection()
+        if not conn: return
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE OrdenResultados
+            SET estado = 'Ingresado', validadoPor = NULL
+            WHERE ordenTrabajoId = ?
+        """, (orden_id,))
+
+        conn.commit()
+
+
     def get_resultados_grouped(self, orden_id):
         conn = self.get_connection()
         if not conn: return []
@@ -476,13 +622,13 @@ class DatabaseManager:
 
         default_profile_id = self.ensure_default_profile()
 
-        # Added a.abreviatura, a.formula, a.esCalculado
+        # Added a.abreviatura, a.formula, a.esCalculado, r.validadoPor
         query = """
             SELECT
                 r.id, r.analitoId, a.nombre, r.valorResultado, r.estado, a.unidad, a.tipoDato, a.categoria,
                 p.id as perfilId, p.nombre as perfilNombre, a.metodo,
                 a.subtituloReporte, a.valorPorDefecto,
-                a.abreviatura, a.formula, a.esCalculado
+                a.abreviatura, a.formula, a.esCalculado, r.validadoPor
             FROM OrdenResultados r
             JOIN Analitos a ON r.analitoId = a.id
             JOIN PerfilesExamen p ON r.perfilExamenId = p.id
@@ -496,7 +642,7 @@ class DatabaseManager:
         groups = {}
 
         for row in rows:
-            rid, aid, aname, val, est, unit, dtype, cat, pid, pname, metodo, subtitulo, def_val, abbr, formula, es_calc = row
+            rid, aid, aname, val, est, unit, dtype, cat, pid, pname, metodo, subtitulo, def_val, abbr, formula, es_calc, val_por = row
 
             opciones_list = []
             if dtype == 'Opciones':
@@ -510,7 +656,8 @@ class DatabaseManager:
                 'categoria': cat, 'perfilNombre': pname,
                 'subtitulo': subtitulo, 'valorPorDefecto': def_val,
                 'opciones': opciones_list,
-                'abreviatura': abbr, 'formula': formula, 'esCalculado': bool(es_calc)
+                'abreviatura': abbr, 'formula': formula, 'esCalculado': bool(es_calc),
+                'validadoPor': val_por
             }
 
             if pid == default_profile_id:
@@ -543,7 +690,7 @@ class DatabaseManager:
 
             cursor.execute("""
                 UPDATE OrdenResultados SET valorResultado = ?, estado = 'Ingresado', fechaRegistro = GETDATE()
-                WHERE id = ?
+                WHERE id = ? AND estado != 'Validado'
             """, (u['valor'], u['id']))
 
         conn.commit()
